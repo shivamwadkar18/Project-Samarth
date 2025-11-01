@@ -11,9 +11,8 @@ RAINFALL_CSV = DATA_DIR / "rainfall_data.csv"
 CROP_CSV = DATA_DIR / "crop_production.csv"
 
 
-# --- Load Rainfall Data ---
 def get_rainfall_data():
-    """Load and clean rainfall data."""
+    """Load and clean rainfall data with flexible column detection."""
     if not RAINFALL_CSV.exists():
         print(f"❌ Rainfall CSV not found at: {RAINFALL_CSV}")
         return pd.DataFrame()
@@ -22,29 +21,60 @@ def get_rainfall_data():
     print(f"✅ Loaded {len(df)} rainfall records")
 
     # Normalize column names
-    df.columns = df.columns.str.strip().str.upper()
+    df.columns = df.columns.str.strip().str.upper().str.replace(" ", "_")
 
-    # Try to rename columns to standard ones
-    rename_map = {}
-    for col in df.columns:
-        if "STATE" in col:
-            rename_map[col] = "STATE"
-        elif "YEAR" in col:
-            rename_map[col] = "YEAR"
-        elif "AVG" in col or "RAIN" in col:
-            rename_map[col] = "AVG_RAINFALL"
-    df.rename(columns=rename_map, inplace=True)
+    # Try to detect the right columns automatically
+    state_col = next((c for c in df.columns if "STATE" in c or "UT" in c), None)
+    year_col = next((c for c in df.columns if "YEAR" in c), None)
+    rain_col = next((c for c in df.columns if "RAIN" in c and "AVG" in c), None)
 
-    required = ["STATE", "YEAR", "AVG_RAINFALL"]
-    if not all(col in df.columns for col in required):
-        return {"error": "Missing expected columns in rainfall dataset."}
+    if not all([state_col, year_col, rain_col]):
+        print(f"⚠️ Missing columns! Found: {df.columns.tolist()}")
+        return pd.DataFrame()
 
-    # Clean and convert
+    df = df[[state_col, year_col, rain_col]].copy()
+    df.columns = ["STATE", "YEAR", "AVG_RAINFALL"]
+
+    # Convert types
     df["AVG_RAINFALL"] = pd.to_numeric(df["AVG_RAINFALL"], errors="coerce")
     df["YEAR"] = pd.to_numeric(df["YEAR"], errors="coerce")
-    df.dropna(subset=["STATE", "AVG_RAINFALL", "YEAR"], inplace=True)
+    df.dropna(subset=["STATE", "YEAR", "AVG_RAINFALL"], inplace=True)
 
+    print(f"✅ Cleaned rainfall data: {df.shape[0]} rows")
     return df
+
+
+def compare_average_rainfall(state_x, state_y, last_n_years=5):
+    """Compare average rainfall between two states."""
+    df = get_rainfall_data()
+    if df.empty:
+        return {"error": "Rainfall data not available or invalid."}
+
+    # Get recent years safely
+    if "YEAR" in df.columns:
+        years_sorted = sorted(df["YEAR"].dropna().unique())
+        if len(years_sorted) == 0:
+            return {"error": "No valid year data found."}
+        recent_years = years_sorted[-last_n_years:]
+        df = df[df["YEAR"].isin(recent_years)]
+
+    # Compute averages
+    avg_x = df[df["STATE"].str.lower().str.strip() == state_x.lower()]["AVG_RAINFALL"].mean()
+    avg_y = df[df["STATE"].str.lower().str.strip() == state_y.lower()]["AVG_RAINFALL"].mean()
+
+    if pd.isna(avg_x) or pd.isna(avg_y):
+        print(f"⚠️ Could not find rainfall data for {state_x} or {state_y}")
+        print("Available states:", df["STATE"].unique().tolist())
+        return {"error": "Could not compute rainfall averages for given states."}
+
+    return {
+        "State X": state_x,
+        "State Y": state_y,
+        "Average Rainfall X (mm)": round(avg_x, 2),
+        "Average Rainfall Y (mm)": round(avg_y, 2),
+        "Years Considered": last_n_years,
+    }
+
 
 
 # --- Load Crop Data ---
@@ -146,4 +176,5 @@ if __name__ == "__main__":
     print("Testing backend locally...")
     print(compare_average_rainfall("Maharashtra", "Kerala"))
     print(top_crops_in_state("Punjab"))
+
 

@@ -1,0 +1,5 @@
+# requirements for the project Samarth
+streamlit
+pandas
+requests
+python-dotenv

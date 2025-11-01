@@ -1,8 +1,6 @@
 # backend.py
 import pandas as pd
-import streamlit as st
 from pathlib import Path
-import re
 
 # Local data folder
 DATA_DIR = Path("data")
@@ -15,10 +13,7 @@ CROP_CSV = DATA_DIR / "crop_production.csv"
 
 # --- Load Rainfall Data ---
 def get_rainfall_data():
-    """
-    Load rainfall data from CSV file.
-    Must have columns like: STATE_UT_NAME, YEAR, ANNUAL, etc.
-    """
+    """Load and clean rainfall data."""
     if not RAINFALL_CSV.exists():
         print(f"❌ Rainfall CSV not found at: {RAINFALL_CSV}")
         return pd.DataFrame()
@@ -26,101 +21,113 @@ def get_rainfall_data():
     df = pd.read_csv(RAINFALL_CSV)
     print(f"✅ Loaded {len(df)} rainfall records")
 
-    # Clean column names
+    # Standardize column names
     df.columns = df.columns.str.strip().str.upper()
 
-    # Convert numeric columns
+    # Try to rename columns to standard ones
+    rename_map = {}
     for col in df.columns:
-        if any(x in col for x in ["ANNUAL", "YEAR", "RAIN"]):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        if "STATE" in col:
+            rename_map[col] = "STATE"
+        elif "YEAR" in col:
+            rename_map[col] = "YEAR"
+        elif "AVG" in col and "RAIN" in col:
+            rename_map[col] = "AVG_RAINFALL"
+    df.rename(columns=rename_map, inplace=True)
+
+    # Check required columns
+    required = ["STATE", "YEAR", "AVG_RAINFALL"]
+    if not all(col in df.columns for col in required):
+        print("⚠️ Missing required columns in rainfall dataset.")
+        return pd.DataFrame()
+
+    # Convert to numeric safely
+    df["AVG_RAINFALL"] = pd.to_numeric(df["AVG_RAINFALL"], errors="coerce")
+    df["YEAR"] = pd.to_numeric(df["YEAR"], errors="coerce")
 
     return df
 
 
 # --- Load Crop Data ---
 def get_crop_data():
-    """
-    Load crop production data from CSV file.
-    Must have columns like: State, Crop, Year, Production, etc.
-    """
+    """Load and clean crop production data."""
     if not CROP_CSV.exists():
         print(f"❌ Crop CSV not found at: {CROP_CSV}")
         return pd.DataFrame()
 
     df = pd.read_csv(CROP_CSV)
-    print(f"✅ Loaded {len(df)} crop production records")
+    print(f"✅ Loaded {len(df)} crop records")
 
+    # Normalize columns
     df.columns = df.columns.str.strip().str.title()
-    return df
+
+    # Rename “State/ Ut Name” → “State”
+    for col in df.columns:
+        if "State" in col:
+            df.rename(columns={col: "State"}, inplace=True)
+
+    # Extract year from last part of column names (e.g., 2009-10)
+    df_long = df.melt(id_vars=["State"], var_name="Crop_Year", value_name="Production")
+
+    # Extract crop name and year
+    df_long["Year"] = df_long["Crop_Year"].str.extract(r"(\d{4}-\d{2})")
+    df_long["Crop"] = (
+        df_long["Crop_Year"]
+        .str.replace(r"\(.*?\)", "", regex=True)
+        .str.replace(r"Food Grains-|Oilseeds-|Cereals-|Production", "", regex=True)
+        .str.replace("-", " ")
+        .str.strip()
+    )
+
+    df_long["Production"] = pd.to_numeric(df_long["Production"], errors="coerce")
+
+    return df_long.dropna(subset=["State", "Crop", "Production"])
 
 
 # --- Compare Rainfall Function ---
 def compare_average_rainfall(state_x, state_y, last_n_years=5):
-    """
-    Compare average rainfall between two states for the last N years.
-    Works fully offline using your rainfall_data.csv.
-    """
     df = get_rainfall_data()
     if df.empty:
-        return {"error": "Rainfall data not available."}
-
-    # Guess year and rainfall columns
-    year_col = next((c for c in df.columns if "YEAR" in c.upper()), None)
-    rain_col = next((c for c in df.columns if "ANNUAL" in c.upper()), None)
-    state_col = next((c for c in df.columns if "STATE" in c.upper()), None)
-
-    if not all([year_col, rain_col, state_col]):
-        return {"error": "Missing expected columns in rainfall dataset."}
+        return {"error": "Rainfall data not available or invalid."}
 
     # Filter last N years
-    if df[year_col].dtype == "float64" or df[year_col].dtype == "int64":
-        recent_years = sorted(df[year_col].dropna().unique())[-last_n_years:]
-        df = df[df[year_col].isin(recent_years)]
+    if "YEAR" in df.columns:
+        recent_years = sorted(df["YEAR"].dropna().unique())[-last_n_years:]
+        df = df[df["YEAR"].isin(recent_years)]
 
-    # Compare both states
-    avg_x = df[df[state_col].str.lower() == state_x.lower()][rain_col].mean()
-    avg_y = df[df[state_col].str.lower() == state_y.lower()][rain_col].mean()
+    # Compute averages
+    avg_x = df[df["STATE"].str.lower() == state_x.lower()]["AVG_RAINFALL"].mean()
+    avg_y = df[df["STATE"].str.lower() == state_y.lower()]["AVG_RAINFALL"].mean()
+
+    if pd.isna(avg_x) or pd.isna(avg_y):
+        return {"error": "Could not compute rainfall averages for given states."}
 
     return {
         "State X": state_x,
         "State Y": state_y,
-        "Average Rainfall X (mm)": round(avg_x, 2) if pd.notna(avg_x) else "N/A",
-        "Average Rainfall Y (mm)": round(avg_y, 2) if pd.notna(avg_y) else "N/A",
+        "Average Rainfall X (mm)": round(avg_x, 2),
+        "Average Rainfall Y (mm)": round(avg_y, 2),
         "Years Considered": last_n_years,
     }
 
 
 # --- Top Crops Function ---
 def top_crops_in_state(state, top_m=3, last_n_years=5):
-    """
-    Return top crops by production in a given state.
-    Works fully offline using your crop_production.csv.
-    """
     df = get_crop_data()
     if df.empty:
-        return {"error": "Crop production data not available."}
+        return {"error": "Crop production data not available or invalid."}
 
-    # Normalize columns
-    state_col = next((c for c in df.columns if "State" in c), None)
-    crop_col = next((c for c in df.columns if "Crop" in c), None)
-    year_col = next((c for c in df.columns if "Year" in c), None)
-    prod_col = next((c for c in df.columns if "Production" in c), None)
-
-    if not all([state_col, crop_col, year_col, prod_col]):
-        return {"error": "Required columns missing in crop data."}
-
-    # Filter last N years and state
-    if df[year_col].dtype in ["int64", "float64"]:
-        recent_years = sorted(df[year_col].dropna().unique())[-last_n_years:]
-        df = df[df[year_col].isin(recent_years)]
-
-    df_state = df[df[state_col].str.lower() == state.lower()]
+    df_state = df[df["State"].str.lower() == state.lower()]
     if df_state.empty:
-        return {"error": f"No data found for state: {state}"}
+        return {"error": f"No crop data found for state: {state}"}
 
-    # Group by crop
+    # Filter last N year-like values (latest seasons)
+    if "Year" in df_state.columns:
+        recent_years = sorted(df_state["Year"].dropna().unique())[-last_n_years:]
+        df_state = df_state[df_state["Year"].isin(recent_years)]
+
     summary = (
-        df_state.groupby(crop_col)[prod_col]
+        df_state.groupby("Crop")["Production"]
         .sum()
         .sort_values(ascending=False)
         .head(top_m)
@@ -135,6 +142,6 @@ def top_crops_in_state(state, top_m=3, last_n_years=5):
 
 
 if __name__ == "__main__":
-    print("Testing locally...")
+    print("Testing backend locally...")
     print(compare_average_rainfall("Maharashtra", "Kerala"))
     print(top_crops_in_state("Punjab"))

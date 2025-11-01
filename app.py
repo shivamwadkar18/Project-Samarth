@@ -1,3 +1,4 @@
+
 # app.py
 import streamlit as st
 from backend import compare_average_rainfall, top_crops_in_state
@@ -37,4 +38,5 @@ with col2:
 
 
 st.markdown("---")
+
 st.caption("Data fetched live from data.gov.in (Agriculture & IMD Datasets). All results are source-cited.")

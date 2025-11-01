@@ -1,0 +1,6 @@
+#Ignored Files
+
+venv/
+__pycache__/
+
+.env
